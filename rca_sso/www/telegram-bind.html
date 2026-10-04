@@ -1,0 +1,116 @@
+{% extends "templates/web.html" %}
+
+{% block title %}{{ _("Привязка Telegram") }}{% endblock %}
+
+{% block page_content %}
+<div class="rca-bind" style="max-width:520px;margin:40px auto;padding:0 16px;font-family:inherit">
+	<h1 style="font-size:24px;font-weight:600;color:#111827;margin-bottom:10px">
+		{{ _("Привязка Telegram") }}
+	</h1>
+	<p style="font-size:15px;line-height:1.6;color:#4b5563;margin-bottom:22px">
+		{{ _("Привяжите Telegram, чтобы входить в личный кабинет без пароля. Почта и пароль продолжат работать.") }}
+	</p>
+
+	<div id="rca-bind-box" style="border:1px solid #e5e7eb;border-radius:12px;padding:22px">
+		<button id="rca-bind-start" type="button"
+			style="width:100%;padding:11px 16px;border-radius:8px;border:none;background:#229ED9;color:#fff;font-size:15px;font-weight:600;cursor:pointer">
+			{{ _("Привязать Telegram") }}
+		</button>
+		<p id="rca-bind-status" style="margin-top:14px;font-size:14px;color:#6b7280;min-height:20px"></p>
+		<div id="rca-bind-code"
+			style="display:none;font-size:34px;font-weight:700;letter-spacing:.16em;color:#111827;background:#f4f5f7;border-radius:10px;padding:14px;text-align:center;margin-top:8px"></div>
+		<a id="rca-bind-open" style="display:none;margin-top:14px;text-align:center;padding:11px 16px;border-radius:8px;background:#229ED9;color:#fff;font-weight:600;text-decoration:none"
+			target="_blank" rel="noopener" href="#">{{ _("Открыть Telegram") }}</a>
+	</div>
+</div>
+
+<script>
+(function () {
+	"use strict";
+
+	var startBtn = document.getElementById("rca-bind-start");
+	var statusEl = document.getElementById("rca-bind-status");
+	var codeEl = document.getElementById("rca-bind-code");
+	var openEl = document.getElementById("rca-bind-open");
+
+	function csrf() {
+		return (window.frappe && window.frappe.csrf_token) || "";
+	}
+
+	function serverMessage(json) {
+		try {
+			var raw = JSON.parse(json._server_messages || "[]");
+			return JSON.parse(raw[0]).message || "";
+		} catch (e) {
+			return json.exc_type || "Ошибка запроса";
+		}
+	}
+
+	function api(method, params) {
+		var body = new URLSearchParams(params || {}).toString();
+		return fetch("/api/method/" + method, {
+			method: "POST",
+			credentials: "same-origin",
+			headers: {
+				"Content-Type": "application/x-www-form-urlencoded",
+				"X-Frappe-CSRF-Token": csrf()
+			},
+			body: body
+		}).then(function (r) {
+			return r.json().then(function (json) {
+				if (json.exc_type) throw new Error(serverMessage(json));
+				return json.message;
+			});
+		});
+	}
+
+	var state = { stopped: false, token: null };
+
+	function poll() {
+		if (state.stopped || !state.token) return;
+		api("rca_sso.api.poll", { request_token: state.token })
+			.then(function (result) {
+				if (state.stopped) return;
+				if (result.status === "confirmed") {
+					statusEl.textContent = "{{ _('Готово, Telegram привязан.') }}";
+					codeEl.style.display = "none";
+					openEl.style.display = "none";
+					startBtn.style.display = "none";
+					return;
+				}
+				if (result.status !== "pending") {
+					statusEl.textContent = "{{ _('Код истёк. Нажмите кнопку ещё раз.') }}";
+					return;
+				}
+				setTimeout(poll, 2000);
+			})
+			.catch(function (error) {
+				statusEl.textContent = error.message;
+			});
+	}
+
+	startBtn.addEventListener("click", function () {
+		startBtn.disabled = true;
+		statusEl.textContent = "{{ _('Готовим код…') }}";
+
+		api("rca_sso.api.start", { purpose: "bind" })
+			.then(function (data) {
+				state.token = data.request_token;
+				state.stopped = false;
+				codeEl.textContent = data.code;
+				codeEl.style.display = "block";
+				openEl.href = "https://t.me/" + data.bot_username + "?start=bind";
+				openEl.style.display = "block";
+				statusEl.textContent = "{{ _('Отправьте этот код боту — привязка произойдёт автоматически.') }}";
+				poll();
+			})
+			.catch(function (error) {
+				statusEl.textContent = error.message;
+			})
+			.finally(function () {
+				startBtn.disabled = false;
+			});
+	});
+})();
+</script>
+{% endblock %}
