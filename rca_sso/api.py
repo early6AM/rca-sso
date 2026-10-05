@@ -204,12 +204,19 @@ def whoami(telegram_id: str):
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
 def magic_link(telegram_id: str, telegram_username: str | None = None, next: str | None = None):
-    """Одноразовая ссылка входа для ученицы — для тёплых лидов из воронки."""
+    """Одноразовая ссылка входа для ученицы — для тёплых лидов из воронки.
+
+    Человек приходит из бота без почты и пароля, поэтому аккаунт заводим сразу
+    по Telegram (см. `_ensure_telegram_student`). Почта появится позже — её
+    спросит форма оплаты, а сменить её можно в личном кабинете.
+    """
     verify_bot_request()
 
-    user = _user_by_telegram(str(telegram_id or "").strip())
-    if not user:
-        frappe.throw(_("Telegram не привязан к аккаунту школы"))
+    telegram_id = str(telegram_id or "").strip()
+    if not telegram_id:
+        frappe.throw(_("Не передан Telegram ID"))
+
+    user = _ensure_telegram_student(telegram_id, telegram_username)
 
     nonce = secrets.token_urlsafe(16)
     frappe.cache.set_value(f"rca_sso_magic:{nonce}", user, expires_in_sec=MAGIC_TTL_MINUTES * 60)
@@ -306,6 +313,30 @@ def _set_telegram(user: str, telegram_id: str, telegram_username: str | None) ->
         update_modified=False,
     )
     frappe.db.commit()
+
+
+def _ensure_telegram_student(telegram_id: str, telegram_username: str | None) -> str:
+    """Аккаунт для Telegram-пользователя: привязанный или только что созданный.
+
+    Из бота человек приходит без почты и пароля, поэтому новый аккаунт получает
+    служебный адрес вида tg<id>@students.<домен>. Реальную почту спросит оплата,
+    а сменить её можно в личном кабинете.
+    """
+    user = _user_by_telegram(telegram_id)
+    if user:
+        return user
+
+    domain = (frappe.conf.get("host_name") or "school.rca.yachts")
+    domain = domain.split("://")[-1].split("/")[0]
+    email = f"tg{telegram_id}@students.{domain}"
+
+    if frappe.db.exists("User", email):
+        user = email
+    else:
+        user = _create_student(email, telegram_username)
+
+    _set_telegram(user, telegram_id, telegram_username)
+    return user
 
 
 def _mask_email(email: str | None) -> str | None:
